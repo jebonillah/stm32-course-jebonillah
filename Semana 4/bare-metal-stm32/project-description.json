@@ -1,10 +1,10 @@
 {
-  "name": "Taller_registros",
+  "name": "bare-metal-stm32",
   "configurations": [
     {
       "name": "Debug",
       "type": "Executable",
-      "output_filename": "Taller_registros",
+      "output_filename": "bare-metal-stm32",
       "mcu": "STM32F411RET6",
       "board": "NUCLEO-F411RE",
       "toolchain_type": "GCC",
@@ -98,7 +98,7 @@
           "type": "cpp_linker",
           "flags": [
             "-Tstm32f411xe_flash.ld",
-            "-Wl,-Map=Taller_registros.map",
+            "-Wl,-Map=bare-metal-stm32.map",
             "-u",
             "_printf_float",
             "--specs=nosys.specs",
@@ -117,7 +117,7 @@
     {
       "name": "Release",
       "type": "Executable",
-      "output_filename": "Taller_registros",
+      "output_filename": "bare-metal-stm32",
       "mcu": "STM32F411RET6",
       "board": "NUCLEO-F411RE",
       "toolchain_type": "GCC",
@@ -202,7 +202,7 @@
           "type": "cpp_linker",
           "flags": [
             "-Tstm32f411xe_flash.ld",
-            "-Wl,-Map=Taller_registros.map",
+            "-Wl,-Map=bare-metal-stm32.map",
             "-u",
             "_printf_float",
             "--specs=nosys.specs",
@@ -220,7 +220,7 @@
     }
   ],
   "source_ide": "Empty",
-  "path": "/tmp/stm32cube_for_vscode_empty_project_SM9Ene",
+  "path": "/tmp/stm32cube_for_vscode_empty_project_a0wNXD",
   "languages": [
     "CPP",
     "C"

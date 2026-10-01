@@ -13,12 +13,15 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/target.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake)
 
 # Project definition
-project(Taller_registros)
+project(bare-metal-stm32)
 
 # Enable CMake support for ASM and C/CPP languages
 enable_language(C CXX ASM)
 
-set(PROJECT_NAME Taller_registros)
+set(PROJECT_NAME bare-metal-stm32)
+# Ruta al paquete de firmware STM32Cube (ajusta la versión si cambia)
+set(CMSIS_ROOT "/home/jesus/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3")
+
 
 # Create an executable object type
 add_executable(${PROJECT_NAME})
@@ -31,14 +34,14 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/files.cmake)
 # Add sources to executable/library
 target_sources(${PROJECT_NAME} PRIVATE
   # User defined sources
+  ${CMSIS_ROOT}/Drivers/CMSIS/Device/ST/STM32F4xx/Source/Templates/system_stm32f4xx.c
 )
 
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
-"/home/jesus/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.0/Drivers/CMSIS/Include"
-"/home/jesus/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.0/Drivers/CMSIS/Device/ST/STM32F4xx/Include"
-
   # User defined include directories
+  ${CMSIS_ROOT}/Drivers/CMSIS/Core/Include
+  ${CMSIS_ROOT}/Drivers/CMSIS/Device/ST/STM32F4xx/Include
 )
 
 # Compiler options
@@ -48,8 +51,8 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 
 # Add additional defined symbols
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-STM32F411xE
   # Add additional defined symbols here
+  STM32F411xE # usa STM32F446xx si trabajas con NUCLEO-F446RE
 )
 
 # Linker options

@@ -134,7 +134,7 @@ target_link_options(${PROJECT_NAME} PUBLIC
     # Linker flags specific to Debug build type
     $<$<CONFIG:Debug>: 
         -T${CMAKE_CURRENT_BINARY_DIR}/stm32f411xe_flash.ld
-        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/Taller_1.map
+        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/bare-metal-stm32.map
         -u
         _printf_float
         --specs=nosys.specs
@@ -151,7 +151,7 @@ target_link_options(${PROJECT_NAME} PUBLIC
     # Linker flags specific to Release build type
     $<$<CONFIG:Release>: 
         -T${CMAKE_CURRENT_BINARY_DIR}/stm32f411xe_flash.ld
-        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/Taller_1.map
+        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/bare-metal-stm32.map
         -u
         _printf_float
         --specs=nosys.specs
