@@ -13,24 +13,15 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/target.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake)
 
 # Project definition
-<<<<<<<< HEAD:Semana 4/bare-metal-stm32/CMakeLists.txt
-project(bare-metal-stm32)
+project(intro_exti)
 
 # Enable CMake support for ASM and C/CPP languages
 enable_language(C CXX ASM)
 
-set(PROJECT_NAME bare-metal-stm32)
+set(PROJECT_NAME intro_exti)
+
 # Ruta al paquete de firmware STM32Cube (ajusta la versión si cambia)
 set(CMSIS_ROOT "/home/jesus/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3")
-
-========
-project(Ejercicios_2)
-
-# Enable CMake support for ASM and C/CPP languages
-enable_language(C CXX ASM)
-
-set(PROJECT_NAME Ejercicios_2)
->>>>>>>> week-03:Semana 2/Ejercicios_2/CMakeLists.txt
 
 # Create an executable object type
 add_executable(${PROJECT_NAME})
@@ -61,7 +52,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 # Add additional defined symbols
 target_compile_definitions(${PROJECT_NAME} PRIVATE
   # Add additional defined symbols here
-  STM32F411xE # usa STM32F446xx si trabajas con NUCLEO-F446RE
+  STM32F411xE   # usa STM32F446xx si trabajas con NUCLEO-F446RE
 )
 
 # Linker options
