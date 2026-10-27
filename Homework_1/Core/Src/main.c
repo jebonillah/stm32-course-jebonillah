@@ -1,24 +1,42 @@
 /**
  ******************************************************************************
  * @file           : main.c
- * @author         : Jesús David Bonilla Hernández (jebonillah)
- * @brief          : Tarea 01 - Blinky en PH1 con TIM11 (0.5s), Display 7 Segmentos
- *                   3491BS (4 dígitos) con refresco multiplexado en TIM2 a 5 ms,
- *                   limpieza completa del display en cada ciclo (apaga todos
- *                   los LEDs antes de encender el dígito correspondiente)
- *                   y control con EXTI para fotocompuertas (PC13 incrementa,
- *                   PA0 decrementa, operando en uint16_t natural: 0 - 1 = 65535).
- ******************************************************************************
- * @attention
+ * @author         : Jesús David Bonilla Hernández (jebonillah@unal.edu.co)
+ * @brief          : Tarea #1 - Taller V, 2026-S2
+ *                   Profesor: Nerio Andrés Montoya Giraldo, PhD.
  *
- * Copyright (c) 2025 STMicroelectronics.
- * All rights reserved.
+ * DESCRIPCIÓN DEL HARDWARE UTILIZADO
+ * - Tarjeta de desarrollo: STMicroelectronics NUCLEO-F411RE (ARM Cortex-M4, 16 MHz).
+ * - Botón de Reset: Pulsador B2 (negro) conectado a línea NRST por hardware.
+ * - LED de estado (Blinky): LED conectado a PH1 (conmutado cada 0.5 s con TIM11).
+ * - Display 7 Segmentos (4 dígitos): Módulo 3491BS de ÁNODO COMÚN (activos en bajo).
+ * - Photo-interruptores: Dos fotocompuertas ópticas con ranura para conteo.
  *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
+ * ASIGNACIÓN DE PINES (PINOUT):
+ * - Segmentos (Cátodos, activos en 0): A->PC11, B->PC10, C->PC8, D->PB8, E->PC6, F->PC12, G->PC9.
+ * - Dígitos (Ánodos comunes, activos en 0): D1->PD2, D2->PC5, D3->PB7, D4->PB9.
+ * - Entradas EXTI (con Pull-up): PC13 (Fotocompuerta 1, +), PA0 (Fotocompuerta 2, -).
+ * - LED de estado: PH1 (Salida push-pull).
  *
- ******************************************************************************
+ * FUNCIONAMIENTO DEL SISTEMA
+ * 1. Máquina de Estados (FSM de 2 estados basada en eventos):
+ *    - Estados (Estado_t):
+ *        * ESTADO_ESPERA: Modo reposo sin consumo activo de procesamiento.
+ *        * ESTADO_ACTIVO: Procesa el evento recibido (conteo o refresco) y retorna a reposo.
+ *    - Eventos (Evento_t): EV_NINGUNO, EV_INCREMENTAR, EV_DECREMENTAR, EV_REFRESCO_POV.
+ *    - Manejo de interrupciones: Las ISR únicamente capturan y registran el evento
+ *      pendiente en la variable global, delegando su procesamiento al bucle principal.
+ *    - Transiciones: Al recibir un evento en ESTADO_ESPERA se conmuta a ESTADO_ACTIVO;
+ *      tras completar la acción correspondiente, se regresa automáticamente a ESTADO_ESPERA.
+ * 2. Temporizadores (2 Timers independientes):
+ *    - TIM11 (APB2): Genera interrupción cada 0.5 s para el blinky de estado en PH1.
+ *    - TIM2 (APB1): Genera interrupción cada 5 ms para el refresco del display (POV).
+ * 3. Display y Persistencia de la Visión (POV):
+ *    - Barrido multiplexado a 5 ms por dígito (20 ms por ciclo = 50 Hz, sin parpadeo).
+ *    - Protocolo anti-ghosting: Borra completamente el display antes de cada dígito.
+ * 4. Fotocompuertas:
+ *    - PC13 (EXTI13): Disparo por flanco de SUBIDA -> genera evento de incremento (+1).
+ *    - PA0 (EXTI0): Disparo por flanco de BAJADA -> genera evento de decremento (-1).
  */
 
 #include <stdint.h>
@@ -28,19 +46,27 @@
 
 // DEFINICIÓN DE VARIABLES GLOBALES Y MÁQUINA DE ESTADOS (FSM)
 
-// Definición de los 2 estados de la máquina de estados
+// Definición de los estados del sistema
 typedef enum {
-    ESTADO_ESPERA = 0, // Estado 1: Reposo
-    ESTADO_ACTIVO = 1  // Estado 2: Funcionando
-} EstadoSistema;
+    ESTADO_ESPERA,     // Estado 1: Modo reposo
+    ESTADO_ACTIVO,     // Estado 2: Modo activo
+    NUM_ESTADOS        // Cantidad total de estados
+} Estado_t;
 
-// Variable que almacena el estado actual de la máquina de estados
-volatile EstadoSistema estado_actual = ESTADO_ESPERA;
+// Definición de los eventos del sistema
+typedef enum {
+    EV_NINGUNO,        // Sin evento pendiente
+    EV_INCREMENTAR,    // Disparado por Fotocompuerta 1 (PC13 - EXTI13, flanco de subida)
+    EV_DECREMENTAR,    // Disparado por Fotocompuerta 2 (PA0 - EXTI0, flanco de bajada)
+    EV_REFRESCO_POV,   // Disparado por TIM2 cada 5 ms para refresco multiplexado
+    NUM_EVENTOS        // Cantidad total de eventos
+} Evento_t;
 
-// Banderas activadas por las interrupciones
-volatile uint8_t flag_refresco = 0;    // Activada por TIM2
-volatile uint8_t flag_incrementar = 0; // Activada por EXTI15_10 (PC13)
-volatile uint8_t flag_decrementar = 0; // Activada por EXTI0 (PA0)
+// Variable de estado actual de la máquina de estados
+Estado_t estado_actual = ESTADO_ESPERA;
+
+// Variable compartida con las ISR para registrar eventos pendientes
+volatile Evento_t evento_pendiente = EV_NINGUNO;
 
 // Contador principal del sistema (16 bits sin signo, inicia en 0000)
 volatile uint16_t contador = 0;
@@ -52,7 +78,7 @@ volatile uint8_t digitos[4] = {0, 0, 0, 0};
 volatile uint8_t digito_actual = 0;
 
 
-//CABECERAS DE FUNCIONES
+// CABECERAS DE FUNCIONES
 
 void init_GPIO(void);
 void init_timer2(void);
@@ -65,6 +91,22 @@ void apagar_digitos(void);
 void borrar_display(void);
 void activar_digito(uint8_t dig);
 void mostrar_numero(uint16_t num);
+Evento_t get_next_event(void);
+
+
+/*
+ * Obtiene el siguiente evento pendiente.
+ * - Deshabilita interrupciones brevemente para garantizar lectura y limpieza limpias.
+ * - Evita condiciones de carrera entre las rutinas de interrupción y el bucle principal.
+ */
+Evento_t get_next_event(void){
+    Evento_t ev;
+    __disable_irq();
+    ev = evento_pendiente;
+    evento_pendiente = EV_NINGUNO;
+    __enable_irq();
+    return ev;
+}
 
 
 // FUNCIÓN PRINCIPAL (MAIN)
@@ -81,56 +123,68 @@ int main(void){
     mostrar_numero(contador);
 
     // 3. Bucle principal con Máquina de Estados de 2 estados
+    Evento_t evento_actual = EV_NINGUNO;
+
     while(1){
         switch (estado_actual) {
 
             case ESTADO_ESPERA:
                 // ESTADO 1: Reposo
+                // Consulta eventos pendientes sin bloquear la CPU (Non-blocking loop)
+                evento_actual = get_next_event();
+
+                // Si ocurrió un evento, transiciona al estado activo
+                if (evento_actual != EV_NINGUNO) {
+                    estado_actual = ESTADO_ACTIVO;
+                }
                 break;
 
             case ESTADO_ACTIVO:
+                // ESTADO 2: Activo (Procesa el evento que disparó la transición)
+                switch (evento_actual) {
 
-                // A. Atender evento de incremento (Fotocompuerta 1 - PC13)
-                if (flag_incrementar) {
-                    flag_incrementar = 0;
-                    contador++;              // Incremento
-                    mostrar_numero(contador);
+                    case EV_INCREMENTAR:
+                        // Fotocompuerta 1 (PC13): Incremento
+                        contador++;
+                        mostrar_numero(contador);
+                        break;
+
+                    case EV_DECREMENTAR:
+                        // Fotocompuerta 2 (PA0): Decremento
+                        contador--;
+                        mostrar_numero(contador);
+                        break;
+
+                    case EV_REFRESCO_POV:
+                        // Refresco multiplexado POV de 1 dígito cada 5 ms (TIM2)
+                        // 1. Apagar display para evitar efecto fantasma
+                        borrar_display();
+
+                        // 2. Dibujar segmentos del dígito correspondiente
+                        dibujar_numero(digitos[digito_actual]);
+
+                        // 3. Encender únicamente el dígito actual
+                        activar_digito(digito_actual);
+
+                        // 4. Avanzar secuencialmente al siguiente dígito (0 -> 1 -> 2 -> 3 -> 0)
+                        digito_actual++;
+                        if (digito_actual >= 4) {
+                            digito_actual = 0;
+                        }
+                        break;
+
+                    default:
+                        break;
                 }
 
-                // B. Atender evento de decremento (Fotocompuerta 2 - PA0)
-                if (flag_decrementar) {
-                    flag_decrementar = 0;
-                    contador--;              // Decremento 
-                    mostrar_numero(contador);
-                }
-
-                // C. Atender evento de refresco del display (TIM2)
-                if (flag_refresco) {
-                    flag_refresco = 0;
-
-                    // 1. Apagar display para evitar efecto fantasma
-                    borrar_display();
-
-                    // 2. Dibujar segmentos del dígito correspondiente
-                    dibujar_numero(digitos[digito_actual]);
-
-                    // 3. Encender únicamente el dígito actual
-                    activar_digito(digito_actual);
-
-                    // 4. Avanzar secuencialmente al siguiente dígito (0 -> 1 -> 2 -> 3 -> 0)
-                    digito_actual++;
-                    if (digito_actual >= 4) {
-                        digito_actual = 0;
-                    }
-                }
-
-                // Si ya se atendieron todos los eventos pendientes, regresar a reposo
-                if (!flag_refresco && !flag_incrementar && !flag_decrementar) {
-                    estado_actual = ESTADO_ESPERA;
-                }
+                // Una vez procesada la acción del evento, limpiar y regresar a reposo
+                evento_actual = EV_NINGUNO;
+                estado_actual = ESTADO_ESPERA;
                 break;
 
             default:
+                // Recuperación segura ante cualquier estado inválido
+                evento_actual = EV_NINGUNO;
                 estado_actual = ESTADO_ESPERA;
                 break;
         }
@@ -142,101 +196,110 @@ int main(void){
 
 // DEFINICIÓN DE FUNCIONES DE CONFIGURACIÓN
 
-/*Asignación de pines:
+/* Asignación de pines:
  * - Blinky:
  *     PH1 -> Salida push-pull (LED parpadeante cada 0.5s con TIM11)
- * - Display 7 segmentos 3491BS:
- *     Segmento A -> PC11 (Activo en 0)
- *     Segmento B -> PC10 (Activo en 0)
- *     Segmento C -> PC8  (Activo en 0)
- *     Segmento D -> PB8  (Activo en 0)
- *     Segmento E -> PC6  (Activo en 0)
- *     Segmento F -> PC12 (Activo en 0)
- *     Segmento G -> PC9  (Activo en 0)
- * - Dígitos (De izquierda a derecha, Activos en nivel BAJO / 0):
- *     Dígito 1 (Miles)    -> PD2
- *     Dígito 2 (Centenas) -> PC5
- *     Dígito 3 (Decenas)  -> PB7
- *     Dígito 4 (Unidades) -> PB9
- * - Fotocompuertas EXTI:
- *     PC13 -> Entrada con Pull-up (Fotocompuerta 1, incrementa contador)
- *     PA0  -> Entrada con Pull-up (Fotocompuerta 2, decrementa contador)
+ * - Display 7 segmentos 3491BS (ÁNODO COMÚN):
+ *     Segmentos A-G (Cátodos individuales, activos en nivel BAJO / 0):
+ *       Segmento A -> PC11
+ *       Segmento B -> PC10
+ *       Segmento C -> PC8
+ *       Segmento D -> PB8
+ *       Segmento E -> PC6
+ *       Segmento F -> PC12
+ *       Segmento G -> PC9
+ *     Dígitos 1-4 (Ánodos comunes, activos en nivel BAJO / 0):
+ *       Dígito 1 (Miles)    -> PD2
+ *       Dígito 2 (Centenas) -> PC5
+ *       Dígito 3 (Decenas)  -> PB7
+ *       Dígito 4 (Unidades) -> PB9
+ * - Fotocompuertas EXTI (Entradas con Pull-up interna):
+ *     PC13 -> Fotocompuerta 1 (Flanco de subida, incrementa contador)
+ *     PA0  -> Fotocompuerta 2 (Flanco de bajada, decrementa contador)
  */
 
 void init_GPIO(void){
+
     // 1. Habilitar señales de reloj para GPIOA, GPIOB, GPIOC, GPIOD y GPIOH (bus AHB1)
+
     RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN |
                      RCC_AHB1ENR_GPIOCEN | RCC_AHB1ENR_GPIODEN |
                      RCC_AHB1ENR_GPIOHEN);
 
-    // PUERTO H: PH1 (Blinky LED)
+    // PUERTO H: PH1 (LED de estado - Blinky parpadeante cada 0.5 s con TIM11)
 
-    GPIOH->MODER &= ~(GPIO_MODER_MODE1);
-    GPIOH->MODER |= (GPIO_MODER_MODE1_0);        // Salida de propósito general (01)
-    GPIOH->OTYPER &= ~(GPIO_OTYPER_OT1);         // Salida Push-pull
-    GPIOH->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED1);   // Baja velocidad
-    GPIOH->PUPDR &= ~(GPIO_PUPDR_PUPDR1);        // Sin resistencias pull-up/pull-down
-    GPIOH->ODR &= ~(GPIO_ODR_OD1);               // Inicialmente en bajo
+    GPIOH->MODER &= ~(GPIO_MODER_MODE1);         // Limpiar bits de modo para PH1
+    GPIOH->MODER |= (GPIO_MODER_MODE1_0);        // Configurar PH1 como salida de propósito general (01)
+    GPIOH->OTYPER &= ~(GPIO_OTYPER_OT1);         // Configurar PH1 como salida tipo Push-pull (0)
+    GPIOH->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED1);   // Configurar PH1 en baja velocidad (00)
+    GPIOH->PUPDR &= ~(GPIO_PUPDR_PUPDR1);        // Configurar PH1 sin resistencias pull-up/pull-down (00)
+    GPIOH->ODR &= ~(GPIO_ODR_OD1);               // Inicializar PH1 en nivel BAJO (LED inicialmente apagado)
 
-    // PUERTO A: PA0 (Fotocompuerta 2 EXTI0 - Decrementar)
+    // PUERTO A: PA0 (Fotocompuerta 2 - EXTI0, Decrementar contador)
 
-    GPIOA->MODER &= ~(GPIO_MODER_MODE0);         // Modo entrada (00)
-    GPIOA->PUPDR &= ~(GPIO_PUPDR_PUPDR0);
-    GPIOA->PUPDR |= (GPIO_PUPDR_PUPDR0_0);       // Pull-Up interna activa
+    GPIOA->MODER &= ~(GPIO_MODER_MODE0);         // Configurar PA0 en modo entrada (00)
+    GPIOA->PUPDR &= ~(GPIO_PUPDR_PUPDR0);        // Limpiar configuración de resistencias pull-up/pull-down
+    GPIOA->PUPDR |= (GPIO_PUPDR_PUPDR0_0);       // Configurar PA0 con resistencia de Pull-Up interna activa (01)
 
-    // PUERTO B: PB7 (Dígito 3), PB8 (Segmento D), PB9 (Dígito 4)
+    // PUERTO B:
+    // - PB7 (Ánodo común Dígito 3 - Decenas)
+    // - PB8 (Cátodo Segmento D)
+    // - PB9 (Ánodo común Dígito 4 - Unidades)
 
-    GPIOB->MODER &= ~(GPIO_MODER_MODE7 | GPIO_MODER_MODE8 | GPIO_MODER_MODE9);
-    GPIOB->MODER |= (GPIO_MODER_MODE7_0 | GPIO_MODER_MODE8_0 | GPIO_MODER_MODE9_0); // Salidas (01)
+    GPIOB->MODER &= ~(GPIO_MODER_MODE7 | GPIO_MODER_MODE8 | GPIO_MODER_MODE9); // Limpiar bits de modo para PB7, PB8 y PB9
+    GPIOB->MODER |= (GPIO_MODER_MODE7_0 | GPIO_MODER_MODE8_0 | GPIO_MODER_MODE9_0); // Configurar PB7, PB8 y PB9 como salidas (01)
 
-    GPIOB->OTYPER &= ~(GPIO_OTYPER_OT7 | GPIO_OTYPER_OT8 | GPIO_OTYPER_OT9);        // Push-pull
-    GPIOB->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED7 | GPIO_OSPEEDR_OSPEED8 | GPIO_OSPEEDR_OSPEED9); // Baja velocidad
-    GPIOB->PUPDR &= ~(GPIO_PUPDR_PUPDR7 | GPIO_PUPDR_PUPDR8 | GPIO_PUPDR_PUPDR9);  // Sin pull-up/down
+    GPIOB->OTYPER &= ~(GPIO_OTYPER_OT7 | GPIO_OTYPER_OT8 | GPIO_OTYPER_OT9);        // Configurar salidas como Push-pull (0)
+    GPIOB->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED7 | GPIO_OSPEEDR_OSPEED8 | GPIO_OSPEEDR_OSPEED9); // Configurar salidas en baja velocidad (00)
+    GPIOB->PUPDR &= ~(GPIO_PUPDR_PUPDR7 | GPIO_PUPDR_PUPDR8 | GPIO_PUPDR_PUPDR9);  // Configurar salidas sin resistencias pull-up/pull-down (00)
 
-    // PB7 y PB9 (Dígitos) inician en ALTO (apagados, lógica activa en bajo)
-    // PB8 (Segmento D) inicia en ALTO (apagado, lógica activa en bajo)
+    // En display de ánodo común (lógica activa en bajo):
+    // - PB7 y PB9 (Ánodos comunes Dígitos 3 y 4) inician en ALTO (1 = apagados)
+    // - PB8 (Cátodo Segmento D) inicia en ALTO (1 = apagado)
     GPIOB->ODR |= (GPIO_ODR_OD7 | GPIO_ODR_OD8 | GPIO_ODR_OD9);
 
     // PUERTO C:
-    // Salidas: PC5 (Dígito 2), PC6 (Seg E), PC8 (Seg C), PC9 (Seg G),
-    //          PC10 (Seg B), PC11 (Seg A), PC12 (Seg F)
-    // Entrada: PC13 (Fotocompuerta 1 - Incrementar)
-    
+    // - Salidas Display: PC5 (Ánodo Dígito 2 - Centenas),
+    //                    PC6 (Seg E), PC8 (Seg C), PC9 (Seg G),
+    //                    PC10 (Seg B), PC11 (Seg A), PC12 (Seg F)
+    // - Entrada EXTI:    PC13 (Fotocompuerta 1 - EXTI13, Incrementar contador)
+
     GPIOC->MODER &= ~(GPIO_MODER_MODE5 | GPIO_MODER_MODE6 | GPIO_MODER_MODE8 |
                       GPIO_MODER_MODE9 | GPIO_MODER_MODE10 | GPIO_MODER_MODE11 |
-                      GPIO_MODER_MODE12 | GPIO_MODER_MODE13);
+                      GPIO_MODER_MODE12 | GPIO_MODER_MODE13); // Limpiar bits de modo para pines PC5 a PC13
 
     GPIOC->MODER |= (GPIO_MODER_MODE5_0 | GPIO_MODER_MODE6_0 | GPIO_MODER_MODE8_0 |
                      GPIO_MODER_MODE9_0 | GPIO_MODER_MODE10_0 | GPIO_MODER_MODE11_0 |
-                     GPIO_MODER_MODE12_0); // Configurar salidas (PC13 queda en 00 = Entrada)
+                     GPIO_MODER_MODE12_0); // Configurar salidas PC5, PC6, PC8-PC12 (01); PC13 queda en entrada (00)
 
     GPIOC->OTYPER &= ~(GPIO_OTYPER_OT5 | GPIO_OTYPER_OT6 | GPIO_OTYPER_OT8 |
                        GPIO_OTYPER_OT9 | GPIO_OTYPER_OT10 | GPIO_OTYPER_OT11 |
-                       GPIO_OTYPER_OT12); // Push-pull para salidas
+                       GPIO_OTYPER_OT12); // Configurar salidas tipo Push-pull (0)
 
     GPIOC->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED5 | GPIO_OSPEEDR_OSPEED6 | GPIO_OSPEEDR_OSPEED8 |
                          GPIO_OSPEEDR_OSPEED9 | GPIO_OSPEEDR_OSPEED10 | GPIO_OSPEEDR_OSPEED11 |
-                         GPIO_OSPEEDR_OSPEED12);
+                         GPIO_OSPEEDR_OSPEED12); // Configurar salidas en baja velocidad (00)
 
     GPIOC->PUPDR &= ~(GPIO_PUPDR_PUPDR5 | GPIO_PUPDR_PUPDR6 | GPIO_PUPDR_PUPDR8 |
                       GPIO_PUPDR_PUPDR9 | GPIO_PUPDR_PUPDR10 | GPIO_PUPDR_PUPDR11 |
-                      GPIO_PUPDR_PUPDR12 | GPIO_PUPDR_PUPDR13);
+                      GPIO_PUPDR_PUPDR12 | GPIO_PUPDR_PUPDR13); // Limpiar bits de pull-up/pull-down (salidas sin pull)
 
-    GPIOC->PUPDR |= (GPIO_PUPDR_PUPDR13_0);      // Pull-Up en PC13
+    GPIOC->PUPDR |= (GPIO_PUPDR_PUPDR13_0);      // Configurar PC13 con resistencia de Pull-Up interna activa (01)
 
-    // PC5 (Dígito 2) inicia en ALTO (apagado, lógica activa en bajo)
-    // Segmentos PC6, PC8, PC9, PC10, PC11, PC12 inician en ALTO (apagados)
+    // En display de ánodo común (lógica activa en bajo):
+    // - PC5 (Ánodo común Dígito 2) inicia en ALTO (1 = apagado)
+    // - PC6, PC8, PC9, PC10, PC11, PC12 (Cátodos Segmentos E, C, G, B, A, F) inician en ALTO (1 = apagados)
     GPIOC->ODR |= (GPIO_ODR_OD5 | GPIO_ODR_OD6 | GPIO_ODR_OD8 | GPIO_ODR_OD9 |
                    GPIO_ODR_OD10 | GPIO_ODR_OD11 | GPIO_ODR_OD12);
 
-    // PUERTO D: PD2 (Dígito 1 - Miles)
+    // PUERTO D: PD2 (Ánodo común Dígito 1 - Miles)
 
-    GPIOD->MODER &= ~(GPIO_MODER_MODE2);
-    GPIOD->MODER |= (GPIO_MODER_MODE2_0);        // Salida de propósito general (01)
-    GPIOD->OTYPER &= ~(GPIO_OTYPER_OT2);         // Push-pull
-    GPIOD->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED2);   // Baja velocidad
-    GPIOD->PUPDR &= ~(GPIO_PUPDR_PUPDR2);        // Sin pull-up/pull-down
-    GPIOD->ODR |= GPIO_ODR_OD2;                  // Inicialmente en ALTO (apagado, lógica activa en bajo)
+    GPIOD->MODER &= ~(GPIO_MODER_MODE2);         // Limpiar bits de modo para PD2
+    GPIOD->MODER |= (GPIO_MODER_MODE2_0);        // Configurar PD2 como salida de propósito general (01)
+    GPIOD->OTYPER &= ~(GPIO_OTYPER_OT2);         // Configurar PD2 como salida tipo Push-pull (0)
+    GPIOD->OSPEEDR &= ~(GPIO_OSPEEDR_OSPEED2);   // Configurar PD2 en baja velocidad (00)
+    GPIOD->PUPDR &= ~(GPIO_PUPDR_PUPDR2);        // Configurar PD2 sin resistencias pull-up/pull-down (00)
+    GPIOD->ODR |= GPIO_ODR_OD2;                  // Inicializar PD2 en ALTO (1 = apagado, ánodo común activo en bajo)
 }
 
 /*
@@ -329,10 +392,11 @@ void init_EXTI(void){
 }
 
 
-// CONTROL DEL DISPLAY DE 7 SEGMENTOS (3491BS)
+// CONTROL DEL DISPLAY DE 7 SEGMENTOS (3491BS - ÁNODO COMÚN)
 
 /*
  * Control individual de los 7 segmentos A-G
+ * En display de ánodo común, los segmentos son los cátodos:
  * - Para encender el segmento (1 lógico recibido) se envía nivel BAJO (0 / GND al cátodo).
  * - Para apagar el segmento (0 lógico recibido) se envía nivel ALTO (1 / VCC al cátodo).
  *
@@ -415,25 +479,25 @@ void dibujar_numero(uint8_t numero){
 }
 
 /*
- * Apaga todos los dígitos (nivel ALTO en los pines de dígitos).
+ * Apaga todos los dígitos (pone en nivel ALTO sus ánodos comunes).
  * Pines: Dígito 1 -> PD2, Dígito 2 -> PC5, Dígito 3 -> PB7, Dígito 4 -> PB9
  */
 
 void apagar_digitos(void){
-    GPIOD->ODR |= GPIO_ODR_OD2;                  // Dígito 1 (PD2) en 1 (Apagado)
-    GPIOC->ODR |= GPIO_ODR_OD5;                  // Dígito 2 (PC5) en 1 (Apagado)
-    GPIOB->ODR |= (GPIO_ODR_OD7 | GPIO_ODR_OD9); // Dígitos 3 y 4 (PB7 y PB9) en 1 (Apagados)
+    GPIOD->ODR |= GPIO_ODR_OD2;                  // Ánodo Dígito 1 (PD2) en 1 (Apagado)
+    GPIOC->ODR |= GPIO_ODR_OD5;                  // Ánodo Dígito 2 (PC5) en 1 (Apagado)
+    GPIOB->ODR |= (GPIO_ODR_OD7 | GPIO_ODR_OD9); // Ánodos Dígitos 3 y 4 (PB7 y PB9) en 1 (Apagados)
 }
 
 /*
  * Borra completamente el display apagando todos los dígitos y segmentos:
- * - Dígitos: se ponen en 1 (VCC) para apagarlos (activos en bajo).
- * - Segmentos: se ponen en 1 (VCC) para apagarlos (activos en bajo).
- * Esto asegura que ningún LED quede encendido ni genere efecto fantasma.
+ * - Ánodos comunes (dígitos): se ponen en 1 (VCC) para deshabilitarlos (activos en 0).
+ * - Cátodos (segmentos): se ponen en 1 (VCC) para apagarlos (activos en 0).
+ * Esto asegura que ningún segmento quede polarizado ni genere efecto fantasma.
  */
 
 void borrar_display(void){
-    // 1. Apagar todos los dígitos (todos en 1)
+    // 1. Apagar todos los dígitos (ánodos en 1)
     apagar_digitos();
 
     // 2. Apagar todos los segmentos (enviar 1 / VCC a los cátodos)
@@ -446,9 +510,8 @@ void borrar_display(void){
 
 /*
  * Activa el dígito especificado (0 a 3, de izquierda a derecha)
- * asegurando primero que todos los demás dígitos estén apagados.
- *        - El dígito seleccionado se pone en BAJO (0) para encenderlo.
- *        - Los demás dígitos se mantienen en ALTO (1) para permanecer apagados.
+ * habilitando su ánodo común en nivel BAJO (0) y asegurando que
+ * los demás dígitos permanezcan deshabilitados en nivel ALTO (1).
  * 0 = Miles (PD2), 1 = Centenas (PC5), 2 = Decenas (PB7), 3 = Unidades (PB9)
  */
 
@@ -501,31 +564,34 @@ void TIM1_TRG_COM_TIM11_IRQHandler(void){
 }
 
 // ISR de TIM2 (Refresco del display 7 segmentos)
+// Registra el evento de refresco para que la máquina de estados ejecute el barrido multiplexado.
 
 void TIM2_IRQHandler(void){
     if (TIM2->SR & TIM_SR_UIF) {
         TIM2->SR &= ~TIM_SR_UIF;         // Limpiar bandera de interrupción de actualización
-        flag_refresco = 1;               // Levantar bandera de refresco
-        estado_actual = ESTADO_ACTIVO;   // Cambiar la máquina a estado activo
+        // Si no hay un evento prioritario de conteo pendiente, registrar refresco
+        if (evento_pendiente == EV_NINGUNO) {
+            evento_pendiente = EV_REFRESCO_POV; // Registrar evento de refresco
+        }
     }
 }
 
 // ISR para EXTI línea 0 (PA0 - Fotocompuerta 2: Decrementar)
+// Registra el evento de decremento para que la máquina de estados actualice el contador.
 
 void EXTI0_IRQHandler(void){
     if (EXTI->PR & EXTI_PR_PR0) {
         EXTI->PR |= EXTI_PR_PR0;         // Limpiar bandera pendiente escribiendo 1
-        flag_decrementar = 1;            // Levantar bandera de decremento
-        estado_actual = ESTADO_ACTIVO;   // Despertar la máquina a estado activo
+        evento_pendiente = EV_DECREMENTAR;  // Registrar evento de decremento
     }
 }
 
 // ISR para EXTI líneas 10 a 15 (PC13 - Fotocompuerta 1: Incrementar)
+// Registra el evento de incremento para que la máquina de estados actualice el contador.
 
 void EXTI15_10_IRQHandler(void){
     if (EXTI->PR & EXTI_PR_PR13) {
         EXTI->PR |= EXTI_PR_PR13;        // Limpiar bandera pendiente escribiendo 1
-        flag_incrementar = 1;            // Levantar bandera de incremento
-        estado_actual = ESTADO_ACTIVO;   // Despertar la máquina a estado activo
+        evento_pendiente = EV_INCREMENTAR;  // Registrar evento de incremento
     }
 }

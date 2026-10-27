@@ -95,7 +95,7 @@ void init_timer3_pwm(void){
 
     // Duty cycle = 50%
     // CCR1 = (ARR + 1) * 50% = 533 / 2 = 266
-    TIM3->CCR1 = 266;
+    TIM3->CCR1 = 150;
 
     // Configuración del canal 1 en modo PWM 1
     TIM3->CCMR1 &= ~TIM_CCMR1_CC1S; // Configurar canal 1 como salida (CC1S = 00)
